@@ -15,42 +15,57 @@ struct HomeRowsSettingsView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                Text("settings.interface.homeRows.description")
+        settingsContainer
+            .task {
+                await viewModel.load()
+            }
+            .refreshable {
+                await viewModel.reload()
+            }
+    }
+
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(tvOS)
+            SettingsList { sections }
+        #else
+            List { sections }
+                .listStyle(listStyle)
+                .navigationTitle("settings.interface.homeRows.title")
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        Section {
+            Text("settings.interface.homeRows.description")
+                .foregroundStyle(.secondary)
+        }
+
+        Section("settings.interface.homeRows.section") {
+            if viewModel.isLoading, viewModel.availableRows.isEmpty {
+                ProgressView("home.loading")
+                    .frame(maxWidth: .infinity)
+            } else if let errorMessage = viewModel.errorMessage, viewModel.availableRows.isEmpty {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+            } else if viewModel.orderedRowsForEditing.isEmpty {
+                Text("common.empty.nothingToShow")
                     .foregroundStyle(.secondary)
-            }
-
-            Section("settings.interface.homeRows.section") {
-                if viewModel.isLoading, viewModel.availableRows.isEmpty {
-                    ProgressView("home.loading")
-                        .frame(maxWidth: .infinity)
-                } else if let errorMessage = viewModel.errorMessage, viewModel.availableRows.isEmpty {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                } else if viewModel.orderedRowsForEditing.isEmpty {
-                    Text("common.empty.nothingToShow")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(viewModel.orderedRowsForEditing.enumerated()), id: \.element.id) { index, row in
-                        rowControls(at: index, row: row)
-                    }
-                }
-            }
-
-            Section {
-                Button("settings.interface.homeRows.restoreDefaults", role: .destructive) {
-                    viewModel.resetRowPreferences()
+            } else {
+                ForEach(Array(viewModel.orderedRowsForEditing.enumerated()), id: \.element.id) { index, row in
+                    rowControls(at: index, row: row)
                 }
             }
         }
-        .listStyle(listStyle)
-        .navigationTitle("settings.interface.homeRows.title")
-        .task {
-            await viewModel.load()
-        }
-        .refreshable {
-            await viewModel.reload()
+
+        Section {
+            Button("settings.interface.homeRows.restoreDefaults", role: .destructive) {
+                viewModel.resetRowPreferences()
+            }
+            #if os(tvOS)
+            .settingsFocus("restoreRows", isDefault: viewModel.orderedRowsForEditing.isEmpty)
+            #endif
         }
     }
 
@@ -75,6 +90,7 @@ struct HomeRowsSettingsView: View {
                         )
                     }
                     .buttonStyle(.bordered)
+                    .settingsFocus("row-\(row.id)-visibility", isDefault: index == 0)
 
                     Button {
                         viewModel.moveRow(at: index, by: -1)
@@ -83,6 +99,7 @@ struct HomeRowsSettingsView: View {
                     }
                     .buttonStyle(.bordered)
                     .foregroundStyle(.secondary)
+                    .settingsFocus("row-\(row.id)-up", exitsLeft: false)
                     .disabled(index == 0)
 
                     Button {
@@ -92,6 +109,7 @@ struct HomeRowsSettingsView: View {
                     }
                     .buttonStyle(.bordered)
                     .foregroundStyle(.secondary)
+                    .settingsFocus("row-\(row.id)-down", exitsLeft: false)
                     .disabled(index == viewModel.orderedRowsForEditing.count - 1)
                 }
             }
@@ -127,8 +145,8 @@ struct HomeRowsSettingsView: View {
     private func tvOSActionLabel(_ title: LocalizedStringKey, systemImage: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-            Text(title)
         }
+        .accessibilityLabel(Text(title))
     }
 
     private var listStyle: some ListStyle {
