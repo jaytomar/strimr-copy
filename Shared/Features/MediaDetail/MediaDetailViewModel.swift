@@ -100,6 +100,11 @@ final class MediaDetailViewModel {
         await loadDetails(preservingExistingContent: false)
     }
 
+    /// Reloads without clearing what is on screen, e.g. after the server became reachable again.
+    func refreshSilently() async {
+        await loadDetails(preservingExistingContent: true)
+    }
+
     func refreshIfNeeded(now: Date = Date()) async {
         guard refreshGate.shouldRefresh(now: now, isLoading: isLoading) else { return }
         await loadDetails(preservingExistingContent: true)
@@ -286,19 +291,29 @@ final class MediaDetailViewModel {
         backdropSourcePath = path
         backdropGradient = []
 
-        do {
-            guard let resource = try await services.artwork.artwork(
-                path: path,
-                width: 300,
-                height: 169,
-            ) else { return }
-            let colors = try await ImageCornerColorSampler.colors(from: resource)
-            guard !Task.isCancelled, backdropSourcePath == path else { return }
-            backdropGradient = colors.count == 4 ? colors : []
-        } catch {
-            guard !Task.isCancelled, !error.isCancellation, backdropSourcePath == path else { return }
-            backdropGradient = []
+        // Offline, the art may never have been cached while the poster was.
+        let candidates = [path, media.thumbPath].compactMap(\.self).reduce(into: [String]()) { paths, candidate in
+            if !paths.contains(candidate) {
+                paths.append(candidate)
+            }
         }
+        for candidate in candidates {
+            let colors = await sampledBackdropColors(path: candidate)
+            guard !Task.isCancelled, backdropSourcePath == path else { return }
+            if colors.count == 4 {
+                backdropGradient = colors
+                return
+            }
+        }
+        // Lets a later reload, e.g. once the server is reachable again, retry the same path.
+        backdropSourcePath = nil
+    }
+
+    private func sampledBackdropColors(path: String) async -> [Color] {
+        guard let resource = try? await services.artwork.artwork(path: path, width: 300, height: 169) else {
+            return []
+        }
+        return await (try? ImageCornerColorSampler.colors(from: resource)) ?? []
     }
 
     private func loadWatchlistStatus() async {
@@ -427,6 +442,14 @@ final class MediaDetailViewModel {
     func runtimeText(for item: MediaItem) -> String? {
         guard let duration = item.duration else { return nil }
         return duration.mediaDurationText()
+    }
+
+    func canOpenPerson(_ person: Person) -> Bool {
+        #if os(tvOS)
+            true
+        #else
+            (services.detail as? CachedDetailService)?.canOpenPerson(id: person.id) ?? true
+        #endif
     }
 
     func castImageURL(for member: CastMember, width: Int = 200, height: Int = 260) -> URL? {
@@ -1001,6 +1024,8 @@ final class MediaDetailViewModel {
             guard requestedTrackRatingKey == ratingKey else { return }
             if !preservingExistingContent || trackRatingKey != ratingKey {
                 clearTrackSelection()
+                // Track selection needs the server; offline the section simply disappears.
+                guard !(error is any ExpectedConnectivityError) else { return }
                 trackSelectionErrorMessage = error.localizedDescription
             }
         }
@@ -1081,6 +1106,17 @@ final class MediaDetailViewModel {
             fallbackPlaybackTarget = nil
         }
         defer { isLoading = false }
+
+        #if !os(tvOS)
+            if !preservingExistingContent, detailTargetID == media.id,
+               let cached = (services.detail as? CachedDetailService)?.cachedDetails(for: media.mediaItem)
+            {
+                parentSeries = cached.parentSeries.flatMap(PlayableMediaItem.init)
+                seasons = cached.seasons
+                episodes = cached.episodes
+                cast = cached.cast
+            }
+        #endif
 
         do {
             let target = detailTargetID == media.id

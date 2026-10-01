@@ -91,6 +91,13 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
         return MediaItem(plexItem: item, server: server)
     }
 
+    func libraryID(for media: MediaItem) async throws -> String? {
+        if let librarySectionID = media.librarySectionID {
+            return librarySectionID
+        }
+        return try await mediaItem(id: media.id).librarySectionID
+    }
+
     func fetchExtras(for media: MediaItem) async throws -> [MediaItem] {
         let response = try await MetadataRepository(context: context).getMetadataExtras(ratingKey: media.id)
         return (response.mediaContainer.metadata ?? [])
@@ -151,7 +158,7 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
             params: params,
             includeLibraryPlaylists: includesPlaylists,
         )
-        let continueHub = try await continueResponse.mediaContainer.hub?.first.map(Hub.init)
+        let continueHub = try await continueResponse.mediaContainer.hub?.first.map { Hub(plexHub: $0, server: server) }
         let promoted = try await promotedResponse.mediaContainer.hub ?? []
         var rows: [HomeRow] = []
         if let continueHub, continueHub.hasItems {
@@ -159,7 +166,7 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
         }
         rows.append(contentsOf: promoted
             .filter { $0.hubIdentifier.lowercased().contains("recentlyadded") && $0.size > 0 }
-            .map(Hub.init)
+            .map { Hub(plexHub: $0, server: server) }
             .filter(\.hasItems)
             .map { HomeRow.providerHub(server: server, hub: $0) })
         return HomeContent(rows: rows)
@@ -186,7 +193,7 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
     func recommended(in library: Library) async throws -> [Hub] {
         guard let sectionID = library.sectionId else { return [] }
         let response = try await HubRepository(context: context).getSectionHubs(sectionId: sectionID)
-        return (response.mediaContainer.hub ?? []).map(Hub.init)
+        return (response.mediaContainer.hub ?? []).map { Hub(plexHub: $0, server: server) }
     }
 
     func items(
@@ -391,7 +398,7 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
             seasons: seasons,
             episodes: episodes,
             cast: cast,
-            relatedHubs: (related.mediaContainer.hub ?? []).map(Hub.init),
+            relatedHubs: (related.mediaContainer.hub ?? []).map { Hub(plexHub: $0, server: server) },
         )
     }
 
@@ -962,6 +969,60 @@ final class PlexMediaServiceAdapter: MediaHomeService, MediaLibraryService, Medi
         )
     }
 
+    func reportItemPlayback(
+        itemID: String,
+        state: ItemPlaybackReportState,
+        position: TimeInterval,
+        duration: TimeInterval?,
+        isPaused: Bool,
+    ) async throws {
+        let timelineState: PlaybackRepository.PlaybackState = switch state {
+        case .stopped:
+            .stopped
+        case .started, .progress:
+            isPaused ? .paused : .playing
+        }
+        _ = try await PlaybackRepository(context: context).updateTimeline(
+            ratingKey: itemID,
+            state: timelineState,
+            time: max(0, Int(position * 1000)),
+            duration: max(0, Int((duration ?? 0) * 1000)),
+            sessionIdentifier: playbackSessionID,
+            includesKey: true,
+        )
+    }
+
+    func pushItemPosition(
+        itemID: String,
+        position: TimeInterval,
+        duration: TimeInterval?,
+        at _: Date,
+    ) async throws {
+        // Plex ignores client dates: the server records the synchronization time as lastViewedAt.
+        _ = try await PlaybackRepository(context: context).updateTimeline(
+            ratingKey: itemID,
+            state: .stopped,
+            time: max(0, Int(position * 1000)),
+            duration: max(0, Int((duration ?? 0) * 1000)),
+            sessionIdentifier: UUID().uuidString,
+            includesKey: true,
+        )
+    }
+
+    func markItemWatched(itemID: String, at _: Date) async throws {
+        try await ScrobbleRepository(context: context).markWatched(key: itemID)
+    }
+
+    func serverWatchState(itemID: String) async throws -> ServerItemWatchState {
+        let item = try await mediaItem(id: itemID)
+        return ServerItemWatchState(
+            viewOffset: item.viewOffset,
+            viewCount: item.viewCount ?? 0,
+            isPlayed: (item.viewCount ?? 0) > 0,
+            lastViewedAt: item.lastViewedAt,
+        )
+    }
+
     private func report(
         plan: PlaybackPlan,
         position: TimeInterval,
@@ -1204,16 +1265,37 @@ enum PlexMediaServicesFactory {
             scope: .plex(serverID: identity.id, profileID: profileID),
         )
         let liveTV = PlexLiveTVService(context: context)
+        #if os(tvOS)
+            let decorated = (
+                home: adapter as any MediaHomeService,
+                library: adapter as any MediaLibraryService,
+                search: adapter as any MediaSearchService,
+                artwork: adapter as any MediaArtworkService,
+                detail: adapter as any MediaDetailService,
+                favorites: favorites as any MediaFavoritesService,
+            )
+        #else
+            let decorated = OfflineServiceDecorators(
+                owner: MediaOwner(server: identity, userID: profileID),
+                serverName: sessionManager?.plexServer?.name ?? identity.id,
+                home: adapter,
+                library: adapter,
+                search: adapter,
+                artwork: adapter,
+                detail: adapter,
+                favorites: favorites,
+            )
+        #endif
         let services = MediaServices(
             provider: .plex,
             identity: identity,
             capabilities: .plex,
-            home: adapter,
-            library: adapter,
-            search: adapter,
-            artwork: adapter,
-            detail: adapter,
-            favorites: favorites,
+            home: decorated.home,
+            library: decorated.library,
+            search: decorated.search,
+            artwork: decorated.artwork,
+            detail: decorated.detail,
+            favorites: decorated.favorites,
             playback: adapter,
             liveTV: liveTV,
             downloads: adapter,
@@ -1222,6 +1304,12 @@ enum PlexMediaServicesFactory {
             trackSelectionAccountIdentifier: profileID,
         )
         adapter.services = services
+        #if !os(tvOS)
+            decorated.attach(to: services)
+        #endif
+        services.availabilityProbeURL = { [weak context] in
+            context?.baseURLServer?.appendingPathComponent("identity")
+        }
         return services
     }
 }
