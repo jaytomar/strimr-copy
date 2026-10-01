@@ -51,7 +51,7 @@ struct MediaDetailView: View {
 
                         buttonsRow
 
-                        if bindableViewModel.hasTrackSelection {
+                        if bindableViewModel.hasTrackSelection || bindableViewModel.selectedVersion != nil {
                             MediaDetailTrackSummary(viewModel: bindableViewModel, spacing: 24)
                         }
 
@@ -344,7 +344,7 @@ struct MediaDetailView: View {
                 )
             }
 
-            if viewModel.hasTrackSelection || viewModel.canSearchSubtitles {
+            if viewModel.hasTrackSelection || viewModel.showsVersionSelection || viewModel.canSearchSubtitles {
                 Divider()
                 MediaDetailTrackMenuItems(
                     viewModel: viewModel,
