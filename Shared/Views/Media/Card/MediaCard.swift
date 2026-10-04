@@ -42,6 +42,7 @@ struct MediaCard: View {
             }
         }
         .frame(width: size.width, alignment: .leading)
+        .contentShape(Rectangle())
         .offlineAvailability(of: media, defaultServer: mediaServices.identity)
         #if os(tvOS)
             .focusable()
