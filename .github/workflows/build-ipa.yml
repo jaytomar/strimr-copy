@@ -1,0 +1,46 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:      # lets you run it manually from the Actions tab
+  push:
+    branches: [main]      # also runs automatically whenever you commit to main
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version and available schemes
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project Strimr.xcodeproj
+
+      - name: Build iOS app (no code signing)
+        run: |
+          xcodebuild \
+            -project Strimr.xcodeproj \
+            -scheme "Strimr-iOS" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package into .ipa
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          echo "Found app: $APP"
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Strimr-unsigned.ipa Payload
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strimr-unsigned-ipa
+          path: Strimr-unsigned.ipa
